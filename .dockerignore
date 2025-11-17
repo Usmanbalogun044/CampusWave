@@ -1,0 +1,12 @@
+vendor
+node_modules
+.env
+/storage
+/public/storage
+/.git
+/.github
+/.vscode
+.idea
+.DS_Store
+npm-debug.log
+composer.lock
