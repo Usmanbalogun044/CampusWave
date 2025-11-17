@@ -28,4 +28,4 @@ wa-gateway/node_modules/
 wa-gateway/.wwebjs_auth/
 
 # Ignore entire wa-gateway source/runtime (added per request)
-wa-gateway/
+# wa-gateway/
