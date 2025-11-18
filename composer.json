@@ -53,7 +53,10 @@
         ],
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
-            "@php artisan package:discover --ansi"
+            "@php artisan package:discover --ansi",
+            "mkdir -p storage/framework/views",
+            "mkdir -p storage/framework/cache",
+            "mkdir -p storage/framework/sessions"
         ],
         "post-update-cmd": [
             "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
