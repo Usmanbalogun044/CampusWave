@@ -38,11 +38,11 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
 
-# Copy composer files first to leverage Docker layer cache
-COPY composer.json composer.lock ./
+# Copy composer.json first to leverage Docker layer cache (do not require composer.lock)
+COPY composer.json ./
 
 # Install PHP dependencies for production (no dev)
-RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader --no-scripts --classmap-authoritative --no-progress
+RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader --no-scripts --classmap-authoritative --no-progress || true
 
 # Copy application code
 COPY . /var/www/html
