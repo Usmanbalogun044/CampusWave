@@ -17,6 +17,9 @@ app.use(bodyParser.json({ limit: '5mb' }));
 // PUPPETEER_EXECUTABLE_PATH if you use a custom Chromium build.
 const puppeteerOpts = {
     headless: process.env.PUPPETEER_HEADLESS !== 'false',
+    dumpio: true, // stream Chromium stdout/stderr to Node process (useful in containers)
+    defaultViewport: null,
+    ignoreHTTPSErrors: true,
     args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -24,8 +27,11 @@ const puppeteerOpts = {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--single-process',
-        '--disable-gpu'
+        '--disable-gpu',
+        '--disable-features=site-per-process',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-ipc-flooding-protection'
     ]
 };
 if (process.env.PUPPETEER_EXECUTABLE_PATH) puppeteerOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -75,6 +81,15 @@ client.on('auth_failure', msg => {
 
 client.initialize();
 
+// Helper to wait until clientReady is true, with timeout
+const waitForClientReady = async (timeoutMs = 30000) => {
+    const start = Date.now();
+    while (!clientReady) {
+        if (Date.now() - start > timeoutMs) throw new Error('Timeout waiting for WhatsApp client ready');
+        await new Promise(r => setTimeout(r, 500));
+    }
+};
+
 process.on('unhandledRejection', (reason) => {
     console.error('Unhandled Rejection at:', reason && reason.stack ? reason.stack : reason);
 });
@@ -83,40 +98,40 @@ process.on('unhandledRejection', (reason) => {
 app.post('/send', async (req, res) => {
     try {
         const auth = (req.headers['authorization'] || '') ;
-        if (SECRET) {
-            if (!auth || !auth.toLowerCase().startsWith('bearer ')) {
-                return res.status(401).json({ error: 'Missing authorization' });
-            }
-            const token = auth.slice(7).trim();
-            if (token !== SECRET) return res.status(403).json({ error: 'Invalid secret' });
-        }
-
-        const { to, message } = req.body;
-        if (!to || !message) return res.status(400).json({ error: 'Missing to or message' });
-
-        // whatsapp-web.js expects numbers in format: '2348012345678@c.us' for phones
-        // normalize phone: keep digits only; if local 0 prefixed number assume NG (234)
-        let phone = (to || '').toString().replace(/[^0-9]/g, '');
-        if (!phone) return res.status(400).json({ error: 'Invalid to phone number' });
-        if (phone.length >= 8 && phone[0] === '0') {
-            // naive local -> international: replace leading 0 with 234
-            phone = '234' + phone.slice(1);
-        }
-        const numberId = phone.includes('@') ? phone : (phone + '@c.us');
-
-        if (!clientReady) {
-            const msg = 'WhatsApp client not ready';
-            console.error(msg);
-            lastSendError = msg;
-            return res.status(503).json({ error: msg });
-        }
-
-        console.log(`Sending message to ${phone} (id: ${numberId})`);
-        lastSendError = null;
         try {
             const sendRes = await client.sendMessage(numberId, message);
             lastSendResult = { ok: true, id: sendRes.id ? sendRes.id._serialized : null, to: phone, message: message, at: new Date().toISOString() };
             console.log('Send success', lastSendResult);
+            return res.json(lastSendResult);
+        } catch (e) {
+            const errMsg = e && e.message ? e.message : String(e);
+            console.error('Send error', e && e.stack ? e.stack : errMsg);
+            lastSendError = errMsg;
+
+            // If the error indicates the browser/session closed, try to reinitialize and retry once
+            if (/session closed|Session closed|Session not found|Protocol error/i.test(errMsg)) {
+                console.warn('Detected session-closed error — attempting to restart client and retry once');
+                try {
+                    // destroy and re-init client
+                    try { await client.destroy(); } catch (destroyErr) { console.warn('Error during client.destroy()', destroyErr && destroyErr.message ? destroyErr.message : destroyErr); }
+                    client.initialize();
+                    await waitForClientReady(30000);
+                    // retry send
+                    const retryRes = await client.sendMessage(numberId, message);
+                    lastSendResult = { ok: true, id: retryRes.id ? retryRes.id._serialized : null, to: phone, message: message, at: new Date().toISOString(), retried: true };
+                    console.log('Send retry success', lastSendResult);
+                    return res.json(lastSendResult);
+                } catch (retryErr) {
+                    console.error('Retry failed', retryErr && retryErr.stack ? retryErr.stack : retryErr);
+                    lastSendError = retryErr && retryErr.message ? retryErr.message : String(retryErr);
+                }
+            }
+
+            const debug = process.env.APP_DEBUG === 'true' || process.env.APP_DEBUG === '1';
+            const payload = { error: 'Send failed', detail: lastSendError };
+            if (debug) payload.stack = e && e.stack ? e.stack : null;
+            return res.status(500).json(payload);
+        }
             return res.json(lastSendResult);
         } catch (e) {
             console.error('Send error', e && e.stack ? e.stack : (e && e.message ? e.message : e));

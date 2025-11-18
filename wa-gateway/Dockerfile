@@ -43,6 +43,7 @@ RUN apt-get update \
     libatk-bridge2.0-0 \
     libatspi2.0-0 \
     libappindicator3-1 \
+    chromium \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -54,6 +55,7 @@ COPY . .
 
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 EXPOSE 3000
 
