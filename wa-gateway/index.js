@@ -12,9 +12,25 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
 
+// const client = new Client({
+//     authStrategy: new LocalAuth({ clientId: 'wa-gateway' }),
+//     puppeteer: { headless: true }
+// });
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'wa-gateway' }),
-    puppeteer: { headless: true }
+    puppeteer: {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process', 
+            '--disable-gpu'
+        ]
+    }
 });
 
 // store latest QR data URL so we can serve it on a webpage
@@ -132,11 +148,6 @@ app.get('/qr', (req, res) => {
         </body>
         </html>
     `);
-});
-
-// status endpoint for debugging
-app.get('/status', (req, res) => {
-    return res.json({ ok: true, ready: clientReady, authenticated: clientAuthenticated, lastSendResult, lastSendError });
 });
 
 app.listen(PORT, () => console.log(`wa-gateway listening on http://localhost:${PORT}`));
