@@ -97,7 +97,32 @@ process.on('unhandledRejection', (reason) => {
 // Simple send endpoint. Expects Authorization: Bearer <secret>
 app.post('/send', async (req, res) => {
     try {
-        const auth = (req.headers['authorization'] || '') ;
+        const auth = (req.headers['authorization'] || '');
+        if (SECRET) {
+            if (!auth || !auth.toLowerCase().startsWith('bearer ')) {
+                return res.status(401).json({ error: 'Missing authorization' });
+            }
+            const token = auth.slice(7).trim();
+            if (token !== SECRET) return res.status(403).json({ error: 'Invalid secret' });
+        }
+
+        const { to, message } = req.body || {};
+        if (!to || !message) return res.status(400).json({ error: 'Missing to or message' });
+
+        // normalize phone: keep digits only; if local 0 prefixed number assume NG (234)
+        let phone = (to || '').toString().replace(/[^0-9]/g, '');
+        if (!phone) return res.status(400).json({ error: 'Invalid to phone number' });
+        if (phone.length >= 8 && phone[0] === '0') phone = '234' + phone.slice(1);
+        const numberId = phone.includes('@') ? phone : (phone + '@c.us');
+
+        if (!clientReady) {
+            const msg = 'WhatsApp client not ready';
+            console.error(msg);
+            lastSendError = msg;
+            return res.status(503).json({ error: msg });
+        }
+
+        // Attempt send, retry once on session-closed errors
         try {
             const sendRes = await client.sendMessage(numberId, message);
             lastSendResult = { ok: true, id: sendRes.id ? sendRes.id._serialized : null, to: phone, message: message, at: new Date().toISOString() };
@@ -108,15 +133,12 @@ app.post('/send', async (req, res) => {
             console.error('Send error', e && e.stack ? e.stack : errMsg);
             lastSendError = errMsg;
 
-            // If the error indicates the browser/session closed, try to reinitialize and retry once
             if (/session closed|Session closed|Session not found|Protocol error/i.test(errMsg)) {
                 console.warn('Detected session-closed error — attempting to restart client and retry once');
                 try {
-                    // destroy and re-init client
                     try { await client.destroy(); } catch (destroyErr) { console.warn('Error during client.destroy()', destroyErr && destroyErr.message ? destroyErr.message : destroyErr); }
                     client.initialize();
                     await waitForClientReady(30000);
-                    // retry send
                     const retryRes = await client.sendMessage(numberId, message);
                     lastSendResult = { ok: true, id: retryRes.id ? retryRes.id._serialized : null, to: phone, message: message, at: new Date().toISOString(), retried: true };
                     console.log('Send retry success', lastSendResult);
@@ -127,15 +149,6 @@ app.post('/send', async (req, res) => {
                 }
             }
 
-            const debug = process.env.APP_DEBUG === 'true' || process.env.APP_DEBUG === '1';
-            const payload = { error: 'Send failed', detail: lastSendError };
-            if (debug) payload.stack = e && e.stack ? e.stack : null;
-            return res.status(500).json(payload);
-        }
-            return res.json(lastSendResult);
-        } catch (e) {
-            console.error('Send error', e && e.stack ? e.stack : (e && e.message ? e.message : e));
-            lastSendError = e && e.message ? e.message : String(e);
             const debug = process.env.APP_DEBUG === 'true' || process.env.APP_DEBUG === '1';
             const payload = { error: 'Send failed', detail: lastSendError };
             if (debug) payload.stack = e && e.stack ? e.stack : null;
