@@ -12,25 +12,27 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
 
-// const client = new Client({
-//     authStrategy: new LocalAuth({ clientId: 'wa-gateway' }),
-//     puppeteer: { headless: true }
-// });
+// Puppeteer/Chromium launch options. In containers you normally need the
+// no-sandbox flags; an explicit executable path can be supplied with
+// PUPPETEER_EXECUTABLE_PATH if you use a custom Chromium build.
+const puppeteerOpts = {
+    headless: process.env.PUPPETEER_HEADLESS !== 'false',
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu'
+    ]
+};
+if (process.env.PUPPETEER_EXECUTABLE_PATH) puppeteerOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'wa-gateway' }),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process', 
-            '--disable-gpu'
-        ]
-    }
+    puppeteer: puppeteerOpts
 });
 
 // store latest QR data URL so we can serve it on a webpage
@@ -73,6 +75,10 @@ client.on('auth_failure', msg => {
 
 client.initialize();
 
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled Rejection at:', reason && reason.stack ? reason.stack : reason);
+});
+
 // Simple send endpoint. Expects Authorization: Bearer <secret>
 app.post('/send', async (req, res) => {
     try {
@@ -89,8 +95,14 @@ app.post('/send', async (req, res) => {
         if (!to || !message) return res.status(400).json({ error: 'Missing to or message' });
 
         // whatsapp-web.js expects numbers in format: '2348012345678@c.us' for phones
-        const phone = to.replace(/[^0-9]/g, '');
-        const numberId = phone + '@c.us';
+        // normalize phone: keep digits only; if local 0 prefixed number assume NG (234)
+        let phone = (to || '').toString().replace(/[^0-9]/g, '');
+        if (!phone) return res.status(400).json({ error: 'Invalid to phone number' });
+        if (phone.length >= 8 && phone[0] === '0') {
+            // naive local -> international: replace leading 0 with 234
+            phone = '234' + phone.slice(1);
+        }
+        const numberId = phone.includes('@') ? phone : (phone + '@c.us');
 
         if (!clientReady) {
             const msg = 'WhatsApp client not ready';
@@ -107,9 +119,12 @@ app.post('/send', async (req, res) => {
             console.log('Send success', lastSendResult);
             return res.json(lastSendResult);
         } catch (e) {
-            console.error('Send error', e && e.message ? e.message : e);
+            console.error('Send error', e && e.stack ? e.stack : (e && e.message ? e.message : e));
             lastSendError = e && e.message ? e.message : String(e);
-            return res.status(500).json({ error: 'Send failed', detail: lastSendError });
+            const debug = process.env.APP_DEBUG === 'true' || process.env.APP_DEBUG === '1';
+            const payload = { error: 'Send failed', detail: lastSendError };
+            if (debug) payload.stack = e && e.stack ? e.stack : null;
+            return res.status(500).json(payload);
         }
     } catch (e) {
         console.error('Send error', e && e.message ? e.message : e);
@@ -119,6 +134,11 @@ app.post('/send', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send('wa-gateway running'));
+
+// status endpoint to help debug readiness and last send result
+app.get('/status', (req, res) => {
+    return res.json({ ok: true, ready: clientReady, authenticated: clientAuthenticated, lastSendResult, lastSendError });
+});
 
 // simple QR page so you can scan the code from a browser
 app.get('/qr', (req, res) => {
